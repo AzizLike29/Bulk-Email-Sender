@@ -6,7 +6,7 @@ import time
 import secrets
 from email.message import EmailMessage
 from urllib.parse import urlencode
-
+from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 
@@ -194,6 +194,14 @@ def send_route():
                            subject=subject,
                            sent_ok=sent_ok,
                            sent_fail=sent_fail)
+
+@app.post("/upload")
+def upload():
+    file = request.files["image"]
+    filename = secure_filename(file.filename)
+    path = os.path.join("static/uploads", filename)
+    file.save(path)
+    return {"url": url_for("static", filename=f"uploads/{filename}", _external=True)}
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)

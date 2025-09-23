@@ -14,13 +14,23 @@
       </div>
 
       <div class="grid gap-2">
-        <label class="text-sm font-medium">HTML Body</label>
-        <textarea
-          name="body_html"
-          class="border rounded-lg p-2 h-40"
-          placeholder="<p>Halo, ada promo...</p>"
-          required
-        ></textarea>
+        <label for="image_upload" class="text-sm font-medium"
+          >Upload Gambar</label
+        >
+        <input
+          type="file"
+          id="image_upload"
+          accept="image/*"
+          class="text-sm border border-gray-300 rounded p-1"
+        />
+
+        <label for="body_html" class="text-sm font-medium mt-2"
+          >HTML Body</label
+        >
+        <div class="border border-gray-300 rounded-lg overflow-hidden">
+          <div id="editor" class="min-h-[150px]"></div>
+        </div>
+        <textarea name="body_html" id="body_html" hidden></textarea>
         <p class="text-xs text-slate-500">
           Gunakan HTML sederhana. Unsubscribe ditambahkan otomatis di footer.
         </p>
