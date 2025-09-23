@@ -1,0 +1,27 @@
+{% extends "base.html" %} {% block content %}
+<div class="p-5 bg-white border rounded-xl shadow-sm">
+  <h2 class="font-semibold text-lg mb-3">Hasil Pengiriman</h2>
+  <p class="mb-4">Subject: <b>{{ subject }}</b></p>
+  <div class="grid md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold mb-2">Berhasil ({{ sent_ok|length }})</h3>
+      <ul class="list-disc list-inside text-sm">
+        {% for e in sent_ok %}
+        <li>{{ e }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold mb-2">Gagal ({{ sent_fail|length }})</h3>
+      <ul class="list-disc list-inside text-sm">
+        {% for e, err in sent_fail %}
+        <li>{{ e }} — <span class="text-red-600">{{ err }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  <a href="/" class="inline-block mt-4 text-blue-600 hover:underline"
+    >← Kembali</a
+  >
+</div>
+{% endblock %}

@@ -1,0 +1,93 @@
+{% extends "base.html" %} {% block content %}
+<div class="grid gap-6">
+  <div class="p-5 bg-white border rounded-xl shadow-sm">
+    <h2 class="font-semibold text-lg mb-3">Kirim Email Promosi</h2>
+    <form method="post" action="/send" class="grid gap-4">
+      <div class="grid gap-2">
+        <label class="text-sm font-medium">Subject</label>
+        <input
+          name="subject"
+          class="border rounded-lg p-2"
+          placeholder="Promo Spesial Minggu Ini"
+          required
+        />
+      </div>
+
+      <div class="grid gap-2">
+        <label class="text-sm font-medium">HTML Body</label>
+        <textarea
+          name="body_html"
+          class="border rounded-lg p-2 h-40"
+          placeholder="<p>Halo, ada promo...</p>"
+          required
+        ></textarea>
+        <p class="text-xs text-slate-500">
+          Gunakan HTML sederhana. Unsubscribe ditambahkan otomatis di footer.
+        </p>
+      </div>
+
+      <div class="grid gap-2">
+        <label class="text-sm font-medium"
+          >Manual Recipients (comma/line)</label
+        >
+        <textarea
+          name="recipients"
+          class="border rounded-lg p-2 h-24"
+          placeholder="user1@example.com, user2@example.com"
+        ></textarea>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <input
+          id="use_audience"
+          name="use_audience"
+          type="checkbox"
+          class="h-4 w-4"
+        />
+        <label for="use_audience" class="text-sm"
+          >Tambahkan semua subscriber aktif dari database ({{ active_count }}
+          orang)</label
+        >
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="grid gap-2 p-3 border rounded-lg">
+          <div class="text-sm font-medium">Test Send</div>
+          <input
+            name="test_email"
+            class="border rounded-lg p-2"
+            placeholder="email-kamu@contoh.com"
+          />
+          <button
+            name="mode"
+            value="test"
+            class="mt-2 px-3 py-2 rounded-lg bg-slate-900 text-white"
+          >
+            Kirim Test
+          </button>
+          <p class="text-xs text-slate-500">
+            Kirim hanya ke 1 alamat untuk uji coba.
+          </p>
+        </div>
+        <div class="grid gap-2 p-3 border rounded-lg">
+          <div class="text-sm font-medium">Kirim Kampanye</div>
+          <button
+            name="mode"
+            value="send"
+            class="px-3 py-2 rounded-lg bg-emerald-600 text-white"
+          >
+            Kirim ke Penerima
+          </button>
+          <p class="text-xs text-slate-500">
+            Dikirim per orang (bukan BCC) agar link unsubscribe personal.
+          </p>
+        </div>
+      </div>
+
+      <div class="text-xs text-slate-500">
+        From: <b>{{ sender_name }}</b> &lt;{{ sender_email }}&gt;
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %} {% block content %}
+<div class="p-5 bg-white border rounded-xl shadow-sm max-w-lg">
+  {% if ok %}
+  <h2 class="font-semibold text-lg mb-2">Berhasil Unsubscribe</h2>
+  <p class="text-sm">Anda tidak akan menerima email promosi lagi.</p>
+  {% else %}
+  <h2 class="font-semibold text-lg mb-2">Token tidak valid</h2>
+  <p class="text-sm">Tautan unsubscribe tidak dikenal atau sudah dipakai.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %} {% block content %}
+<div class="p-5 bg-white border rounded-xl shadow-sm max-w-md">
+  <h2 class="font-semibold text-lg mb-3">Tambah Subscriber</h2>
+  <form method="post" action="/subscribe" class="grid gap-3">
+    <div class="grid gap-1">
+      <label class="text-sm font-medium">Nama</label>
+      <input
+        name="name"
+        class="border rounded-lg p-2"
+        placeholder="Masukkan nama anda"
+      />
+    </div>
+    <div class="grid gap-1">
+      <label class="text-sm font-medium">Email</label>
+      <input
+        name="email"
+        type="email"
+        class="border rounded-lg p-2"
+        placeholder="example@gmail.com"
+        required
+      />
+    </div>
+    <button class="px-3 py-2 rounded-lg bg-slate-900 text-white">Simpan</button>
+  </form>
+</div>
+{% endblock %}
