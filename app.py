@@ -146,18 +146,18 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
         data["reply_to"] = {"email": REPLY_TO}
 
     # Inline image (CID) jika ada file lokal
-    if inline_image_path and os.path.exists(inline_image_path):
-        ctype, _ = mimetypes.guess_type(inline_image_path)
-        ctype = ctype or "image/jpeg"
-        with open(inline_image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        data.setdefault("attachments", []).append({
-            "content": b64,
-            "type": ctype,
-            "filename": os.path.basename(inline_image_path),
-            "disposition": "inline",
-            "content_id": image_cid,
-        })
+    # if inline_image_path and os.path.exists(inline_image_path):
+    #     ctype, _ = mimetypes.guess_type(inline_image_path)
+    #     ctype = ctype or "image/jpeg"
+    #     with open(inline_image_path, "rb") as f:
+    #         b64 = base64.b64encode(f.read()).decode("ascii")
+    #     data.setdefault("attachments", []).append({
+    #         "content": b64,
+    #         "type": ctype,
+    #         "filename": os.path.basename(inline_image_path),
+    #         "disposition": "inline",
+    #         "content_id": image_cid,
+    #     })
 
     resp = requests.post(url, headers=headers, json=data, timeout=30)
     # SendGrid sukses → 202
@@ -255,8 +255,7 @@ def send_route():
         token = token_map.get(to_email, secrets.token_urlsafe(16))
         unsub_link = build_unsub_link(token)
 
-        # Jika punya path lokal (hasil upload), pakai inline CID; kalau tidak, fallback pakai URL
-        image_src = "cid:promoimg" if local_img_path else image_url_form
+        image_src = image_url_form
 
         html = render_template(
             "email_templates/promo.html",
