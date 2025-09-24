@@ -1,5 +1,4 @@
 flask
 gunicorn
 python-dotenv
-werkzeug
-jinja2
+requests

@@ -1,29 +1,24 @@
 import os
 import sqlite3
-import smtplib
-import ssl
 import time
 import secrets
 import mimetypes
-from email.message import EmailMessage
+import base64
+import requests
 from urllib.parse import urlencode, urlparse
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 
+# Load config dari .env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(override=True)
 
 DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
-BASE_URL = os.getenv("BASE_URL", "https://bulk-email-sender.up.railway.app")
+BASE_URL = os.getenv("BASE_URL", "https://broadcast-email.up.railway.app/")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
 FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
@@ -85,56 +80,12 @@ def get_active_emails():
         cur = con.execute("SELECT email, name, token FROM subscribers WHERE status='active' ORDER BY id DESC")
         return cur.fetchall()
 
-# Email helpers
+# Helpers
 def build_unsub_link(token):
     return f"{BASE_URL}{url_for('unsubscribe')}?{urlencode({'token': token})}"
 
-def send_one_email(smtp, to_email, subject, html_body, unsub_http_link,
-                   inline_image_path=None, image_cid="promoimg"):
-    """
-    Kirim email HTML. Jika inline_image_path diisi, gambar akan disematkan sebagai inline (CID).
-    """
-    msg = EmailMessage()
-    msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg["List-Unsubscribe"] = f"<{unsub_http_link}>"
-
-    # Plain text fallback
-    msg.set_content("This email requires an HTML-capable client to display properly.")
-
-    # HTML part
-    msg.add_alternative(html_body, subtype="html")
-
-    # Sisipkan gambar inline agar tidak dianggap remote image
-    if inline_image_path and os.path.exists(inline_image_path):
-        ctype, _ = mimetypes.guess_type(inline_image_path)
-        maintype, subtype = (ctype or "image/jpeg").split("/", 1)
-        with open(inline_image_path, "rb") as f:
-            # HTML part = payload terakhir
-            msg.get_payload()[-1].add_related(
-                f.read(),
-                maintype=maintype,
-                subtype=subtype,
-                cid=f"<{image_cid}>",
-                filename=os.path.basename(inline_image_path),
-            )
-
-    smtp.send_message(msg)
-
-def connect_smtp():
-    context = ssl.create_default_context()
-    server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-    server.ehlo()
-    server.starttls(context=context)
-    server.ehlo()
-    if SMTP_USER and SMTP_PASS:
-        server.login(SMTP_USER, SMTP_PASS)
-    return server
-
-# Helpers upload/url
 UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)  # auto-buat folder kalau belum ada
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
 
@@ -154,6 +105,56 @@ def _local_path_from_image_url(image_url: str):
     except Exception:
         pass
     return None
+
+# Email via SendGrid Web API
+def send_one_email(to_email, subject, html_body, unsub_http_link,
+                   inline_image_path=None, image_cid="promoimg"):
+    """
+    Kirim email via SendGrid Web API (tanpa SMTP).
+    - API key diambil dari env: SMTP_PASS (biar kompatibel dengan setup sebelumnya).
+    - Jika ada file upload lokal, kirim sebagai inline attachment (CID) dan di template pakai src="cid:promoimg".
+    """
+    SENDGRID_API_KEY = os.getenv("SMTP_PASS")
+    if not SENDGRID_API_KEY:
+        raise RuntimeError("SENDGRID API key tidak ditemukan di SMTP_PASS")
+
+    url = "https://api.sendgrid.com/v3/mail/send"
+    headers = {
+        "Authorization": f"Bearer {SENDGRID_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    data = {
+        "personalizations": [{
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"}
+        }],
+        "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
+        "content": [{
+            "type": "text/html",
+            "value": html_body
+        }]
+    }
+
+    # Inline image (CID) jika ada file lokal
+    if inline_image_path and os.path.exists(inline_image_path):
+        ctype, _ = mimetypes.guess_type(inline_image_path)
+        ctype = ctype or "image/jpeg"
+        with open(inline_image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        data.setdefault("attachments", []).append({
+            "content": b64,
+            "type": ctype,
+            "filename": os.path.basename(inline_image_path),
+            "disposition": "inline",
+            "content_id": image_cid,
+        })
+
+    resp = requests.post(url, headers=headers, json=data, timeout=30)
+    # SendGrid balas 202 kalau sukses
+    if resp.status_code not in (200, 202):
+        raise RuntimeError(f"SendGrid error {resp.status_code}: {resp.text}")
 
 # Routes
 @app.get("/")
@@ -232,41 +233,36 @@ def send_route():
     local_img_path = _local_path_from_image_url(image_url_form) if image_url_form else None
 
     sent_ok, sent_fail = [], []
-    try:
-        with connect_smtp() as smtp:
-            token_map = {row["email"].lower(): row["token"] for row in audience}
-            for to_email in sorted(recipients):
-                token = token_map.get(to_email, secrets.token_urlsafe(16))
-                unsub_link = build_unsub_link(token)
+    token_map = {row["email"].lower(): row["token"] for row in audience}
 
-                # Jika punya path lokal (hasil upload), pakai inline CID; kalau tidak, fallback pakai URL
-                image_src = "cid:promoimg" if local_img_path else image_url_form
+    for to_email in sorted(recipients):
+        token = token_map.get(to_email, secrets.token_urlsafe(16))
+        unsub_link = build_unsub_link(token)
 
-                html = render_template(
-                    "email_templates/promo.html",
-                    body_html=raw_body,
-                    unsub_link=unsub_link,
-                    image_src=image_src,
-                )
+        # Jika punya path lokal (hasil upload), pakai inline CID; kalau tidak, fallback pakai URL
+        image_src = "cid:promoimg" if local_img_path else image_url_form
 
-                try:
-                    send_one_email(
-                        smtp,
-                        to_email,
-                        subject,
-                        html,
-                        unsub_link,
-                        inline_image_path=local_img_path,
-                        image_cid="promoimg",
-                    )
-                    sent_ok.append(to_email)
-                except Exception as e:
-                    sent_fail.append((to_email, str(e)))
+        html = render_template(
+            "email_templates/promo.html",
+            body_html=raw_body,
+            unsub_link=unsub_link,
+            image_src=image_src,
+        )
 
-                time.sleep(BATCH_DELAY_SEC)
-    except Exception as e:
-        flash(f"Gagal koneksi SMTP: {e}", "error")
-        return redirect(url_for("index"))
+        try:
+            send_one_email(
+                to_email,
+                subject,
+                html,
+                unsub_link,
+                inline_image_path=local_img_path,
+                image_cid="promoimg",
+            )
+            sent_ok.append(to_email)
+        except Exception as e:
+            sent_fail.append((to_email, str(e)))
+
+        time.sleep(BATCH_DELAY_SEC)
 
     return render_template(
         "success.html",
@@ -300,7 +296,6 @@ def upload():
     return {"url": url}
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     print(f"Starting Flask on 0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port)
