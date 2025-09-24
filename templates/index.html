@@ -111,7 +111,7 @@
 {% endblock %} {% block scripts %}
 <script>
   document.addEventListener("DOMContentLoaded", function () {
-    // Inisialisasi Quill
+    // Quill
     const quill = new Quill("#editor", {
       theme: "snow",
       placeholder: "Tulis konten promo di sini...",
@@ -125,80 +125,111 @@
       },
     });
 
-    // Upload gambar ke backend lalu sisipkan ke editor
-    function uploadImage(file) {
-      const formData = new FormData();
-      formData.append("image", file);
+    const fileInput = document.getElementById("image_upload");
+    const previewImg = document.getElementById("image_preview");
+    const hiddenInput = document.getElementById("image_url");
+    const form = document.querySelector("form");
+    let uploading = 0;
 
-      fetch("/upload", {
-        method: "POST",
-        body: formData,
-      })
+    function setSendingDisabled(disabled) {
+      document.querySelectorAll('button[name="mode"]').forEach((btn) => {
+        btn.disabled = disabled;
+        if (disabled) {
+          btn.dataset.label = btn.dataset.label || btn.textContent;
+          btn.textContent = "Mengunggah gambar...";
+        } else if (btn.dataset.label) {
+          btn.textContent = btn.dataset.label;
+        }
+      });
+    }
+
+    function uploadImage(file) {
+      uploading++;
+      setSendingDisabled(true);
+
+      const fd = new FormData();
+      fd.append("image", file);
+
+      return fetch("/upload", { method: "POST", body: fd })
         .then((res) => res.json())
         .then((result) => {
-          if (result && result.url) {
-            document.getElementById("image_url").value = result.url;
+          if (!result || !result.url) throw new Error("Upload gagal");
+          const url = result.url; // URL Cloudinary
+          hiddenInput.value = url; // simpan ke form
+          if (previewImg) {
+            previewImg.src = url; // preview pakai URL final
+            previewImg.classList.remove("hidden");
           }
+          return url;
         })
         .catch((err) => {
-          console.error("Upload gagal:", err);
+          console.error(err);
+          alert("Upload gambar gagal. Coba lagi.");
+          return null;
+        })
+        .finally(() => {
+          uploading--;
+          if (uploading === 0) setSendingDisabled(false);
         });
     }
 
-    // Handler tombol "image" pada toolbar
+    // Handler toolbar "image" upload lalu sisipkan ke editor
     quill.getModule("toolbar").addHandler("image", function () {
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/*";
-      input.click();
-      input.onchange = function () {
+      input.onchange = async () => {
         const file = input.files && input.files[0];
-        if (file) uploadImage(file);
-      };
-    });
-
-    // Saat submit form, salin isi Quill ke textarea hidden
-    const form = document.querySelector("form");
-    if (form) {
-      form.addEventListener("submit", function () {
-        const hidden = document.querySelector("#body_html");
-        if (hidden) hidden.value = quill.root.innerHTML;
-      });
-    }
-
-    // Preview untuk #image_upload dan #image_preview
-    const fileInput = document.getElementById("image_upload");
-    const previewImg = document.getElementById("image_preview");
-    let currentURL = null; // simpan ObjectURL agar bisa direvoke
-
-    if (fileInput && previewImg) {
-      fileInput.addEventListener("change", function (e) {
-        const file = e.target.files && e.target.files[0];
-
-        // Jika batal pilih
-        if (!file) {
-          if (currentURL) {
-            URL.revokeObjectURL(currentURL);
-            currentURL = null;
-          }
-          previewImg.src = "";
-          previewImg.classList.add("hidden");
+        if (!file) return;
+        if (file.type && !file.type.startsWith("image/")) {
+          alert("File yang dipilih bukan gambar.");
           return;
         }
+        const url = await uploadImage(file);
+        if (url) {
+          const pos = (quill.getSelection() || { index: quill.getLength() })
+            .index;
+          quill.insertEmbed(pos, "image", url, "user");
+          quill.setSelection(pos + 1);
+        }
+      };
+      input.click();
+    });
 
-        // Validasi tipe gambar
+    // Handler input file terpisah (Preview hero image)
+    if (fileInput) {
+      fileInput.addEventListener("change", async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) {
+          previewImg.src = "";
+          previewImg.classList.add("hidden");
+          hiddenInput.value = "";
+          return;
+        }
         if (file.type && !file.type.startsWith("image/")) {
           alert("File yang dipilih bukan gambar.");
           e.target.value = "";
           return;
         }
+        await uploadImage(file);
+      });
+    }
 
-        // Tampilkan preview
-        if (currentURL) URL.revokeObjectURL(currentURL);
-        currentURL = URL.createObjectURL(file);
-        previewImg.src = currentURL;
-        previewImg.classList.remove("hidden");
-        uploadImage(file);
+    // Kirim form blok kalau upload belum selesai
+    if (form) {
+      form.addEventListener("submit", function (e) {
+        if (uploading > 0) {
+          e.preventDefault();
+          alert("Tunggu, gambar masih diunggah…");
+          return;
+        }
+        // Salin HTML editor ke textarea hidden
+        const hidden = document.getElementById("body_html");
+        if (hidden) hidden.value = quill.root.innerHTML;
+        if (fileInput && fileInput.files.length > 0 && !hiddenInput.value) {
+          e.preventDefault();
+          alert("Gambar belum tersimpan. Coba unggah ulang.");
+        }
       });
     }
   });
