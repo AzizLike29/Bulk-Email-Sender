@@ -2,8 +2,6 @@ import os
 import sqlite3
 import time
 import secrets
-import mimetypes
-import base64
 import requests
 from urllib.parse import urlencode, urlparse
 from werkzeug.utils import secure_filename
@@ -144,20 +142,6 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
     # Reply-To opsional
     if REPLY_TO:
         data["reply_to"] = {"email": REPLY_TO}
-
-    # Inline image (CID) jika ada file lokal
-    # if inline_image_path and os.path.exists(inline_image_path):
-    #     ctype, _ = mimetypes.guess_type(inline_image_path)
-    #     ctype = ctype or "image/jpeg"
-    #     with open(inline_image_path, "rb") as f:
-    #         b64 = base64.b64encode(f.read()).decode("ascii")
-    #     data.setdefault("attachments", []).append({
-    #         "content": b64,
-    #         "type": ctype,
-    #         "filename": os.path.basename(inline_image_path),
-    #         "disposition": "inline",
-    #         "content_id": image_cid,
-    #     })
 
     resp = requests.post(url, headers=headers, json=data, timeout=30)
     # SendGrid sukses → 202
