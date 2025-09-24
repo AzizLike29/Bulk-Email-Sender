@@ -24,6 +24,12 @@
           class="text-sm border border-gray-300 rounded p-1"
         />
 
+        <img
+          id="image_preview"
+          alt="Preview gambar"
+          class="mt-2 w-48 h-48 object-contain border rounded hidden"
+        />
+
         <label for="body_html" class="text-sm font-medium mt-2"
           >HTML Body</label
         >
@@ -100,4 +106,104 @@
     </form>
   </div>
 </div>
+{% endblock %} {% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    // Inisialisasi Quill
+    const quill = new Quill("#editor", {
+      theme: "snow",
+      placeholder: "Tulis konten promo di sini...",
+      modules: {
+        toolbar: [
+          ["bold", "italic", "underline"],
+          [{ color: [] }, { background: [] }],
+          [{ list: "ordered" }, { list: "bullet" }],
+          ["link", "image"],
+        ],
+      },
+    });
+
+    // Upload gambar ke backend lalu sisipkan ke editor
+    function uploadImage(file) {
+      const formData = new FormData();
+      formData.append("image", file);
+
+      fetch("/upload", {
+        method: "POST",
+        body: formData,
+      })
+        .then(function (res) {
+          return res.json();
+        })
+        .then(function (result) {
+          const range = quill.getSelection(true) || {
+            index: quill.getLength(),
+          };
+          if (result && result.url) {
+            quill.insertEmbed(range.index, "image", result.url);
+            quill.setSelection(range.index + 1);
+          }
+        })
+        .catch(function (err) {
+          console.error("Upload gagal:", err);
+        });
+    }
+
+    // Handler tombol "image" pada toolbar
+    quill.getModule("toolbar").addHandler("image", function () {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.click();
+      input.onchange = function () {
+        const file = input.files && input.files[0];
+        if (file) uploadImage(file);
+      };
+    });
+
+    // Saat submit form, salin isi Quill ke textarea hidden
+    const form = document.querySelector("form");
+    if (form) {
+      form.addEventListener("submit", function () {
+        const hidden = document.querySelector("#body_html");
+        if (hidden) hidden.value = quill.root.innerHTML;
+      });
+    }
+
+    // Preview untuk #image_upload dan #image_preview
+    const fileInput = document.getElementById("image_upload");
+    const previewImg = document.getElementById("image_preview");
+    let currentURL = null; // simpan ObjectURL agar bisa direvoke
+
+    if (fileInput && previewImg) {
+      fileInput.addEventListener("change", function (e) {
+        const file = e.target.files && e.target.files[0];
+
+        // Jika batal pilih
+        if (!file) {
+          if (currentURL) {
+            URL.revokeObjectURL(currentURL);
+            currentURL = null;
+          }
+          previewImg.src = "";
+          previewImg.classList.add("hidden");
+          return;
+        }
+
+        // Validasi tipe gambar
+        if (file.type && !file.type.startsWith("image/")) {
+          alert("File yang dipilih bukan gambar.");
+          e.target.value = "";
+          return;
+        }
+
+        // Tampilkan preview
+        if (currentURL) URL.revokeObjectURL(currentURL);
+        currentURL = URL.createObjectURL(file);
+        previewImg.src = currentURL;
+        previewImg.classList.remove("hidden");
+      });
+    }
+  });
+</script>
 {% endblock %}

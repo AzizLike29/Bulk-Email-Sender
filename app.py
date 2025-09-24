@@ -30,6 +30,9 @@ FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 app = Flask(__name__)
 app.config["SECRET_KEY"] = FLASK_SECRET
 
+PUBLIC_BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+app.config["PREFERRED_URL_SCHEME"] = "https"
+
 # DB (SQLite)
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -195,13 +198,38 @@ def send_route():
                            sent_ok=sent_ok,
                            sent_fail=sent_fail)
 
+# BASE_DIR didefinisikan
+UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)  # auto-buat folder kalau belum ada
+
+ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+def allowed_ext(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
+
 @app.post("/upload")
 def upload():
-    file = request.files["image"]
-    filename = secure_filename(file.filename)
-    path = os.path.join("static/uploads", filename)
+    file = request.files.get("image")
+    if not file or file.filename == "":
+        return {"error": "No file"}, 400
+
+    if not allowed_ext(file.filename):
+        return {"error": "Invalid file type"}, 400
+
+    # nama unik agar tidak bentrok
+    name, ext = os.path.splitext(secure_filename(file.filename))
+    uniq = f"{int(time.time())}_{secrets.token_hex(4)}"
+    filename = f"{name[:40]}_{uniq}{ext.lower()}"
+
+    path = os.path.join(UPLOAD_DIR, filename)
     file.save(path)
-    return {"url": url_for("static", filename=f"uploads/{filename}", _external=True)}
+
+    # URL publik ke static
+    rel = url_for("static", filename=f"uploads/{filename}")
+    url = f"{PUBLIC_BASE_URL}{rel}" if PUBLIC_BASE_URL else url_for(
+        "static", filename=f"uploads/{filename}", _external=True
+    )
+    return {"url": url}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
