@@ -1,4 +1,6 @@
 flask
-gunicorn
 python-dotenv
 requests
+werkzeug
+gunicorn
+cloudinary

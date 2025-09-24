@@ -15,16 +15,32 @@ load_dotenv(override=True)
 DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
-SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
-REPLY_TO = os.getenv("REPLY_TO", "")
-BASE_URL = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
+SENDER_NAME  = os.getenv("SENDER_NAME", "No-Reply")
+REPLY_TO     = os.getenv("REPLY_TO", "")
+BASE_URL     = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
-FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
+FLASK_SECRET    = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = FLASK_SECRET
 PUBLIC_BASE_URL = BASE_URL
 app.config["PREFERRED_URL_SCHEME"] = "https"
+
+# Cloudinary
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_API_KEY    = os.getenv("CLOUDINARY_API_KEY", "")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
+
+CLOUDINARY_ENABLED = bool(CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET)
+if CLOUDINARY_ENABLED:
+    import cloudinary
+    import cloudinary.uploader
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True,
+    )
 
 # DB
 def get_db():
@@ -90,11 +106,10 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
-
 def allowed_ext(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
 
-# Send email (SendGrid Web API)
+# Kirim email (SendGrid Web API)
 def send_one_email(to_email, subject, html_body, unsub_http_link):
     SENDGRID_API_KEY = os.getenv("SMTP_PASS")
     if not SENDGRID_API_KEY:
@@ -167,12 +182,12 @@ def unsubscribe():
 
 @app.post("/send")
 def send_route():
-    subject = (request.form.get("subject") or "").strip()
-    raw_body = request.form.get("body_html") or ""
+    subject        = (request.form.get("subject") or "").strip()
+    raw_body       = request.form.get("body_html") or ""
     raw_recipients = request.form.get("recipients") or ""
-    use_audience = request.form.get("use_audience") == "on"
-    mode = request.form.get("mode", "send")
-    test_email = (request.form.get("test_email") or "").strip()
+    use_audience   = request.form.get("use_audience") == "on"
+    mode           = request.form.get("mode", "send")
+    test_email     = (request.form.get("test_email") or "").strip()
 
     if not os.getenv("SMTP_PASS"):
         flash("Gagal: SMTP_PASS (SendGrid API Key) belum diset di Variables.", "error")
@@ -204,12 +219,13 @@ def send_route():
         return redirect(url_for("index"))
 
     image_url_form = (request.form.get("image_url") or "").strip()
-    image_src = None
     if image_url_form:
         if image_url_form.startswith("/"):
             image_src = f"{PUBLIC_BASE_URL}{image_url_form}"
         else:
             image_src = image_url_form
+    else:
+        image_src = None
 
     sent_ok, sent_fail = [], []
     token_map = {row["email"].lower(): row["token"] for row in audience}
@@ -246,13 +262,29 @@ def upload():
     if not allowed_ext(file.filename):
         return {"error": "Invalid file type"}, 400
 
+    if CLOUDINARY_ENABLED:
+        try:
+            res = cloudinary.uploader.upload(
+                file,
+                folder="email-assets",
+                resource_type="image",
+                use_filename=True,
+                unique_filename=True,
+                overwrite=False,
+            )
+            url = res.get("secure_url")
+            if not url:
+                return {"error": "Upload gagal"}, 500
+            return {"url": url}
+        except Exception as e:
+            return {"error": f"Cloudinary error: {e}"}, 500
+
+    # Fallback simpan lokal
     name, ext = os.path.splitext(secure_filename(file.filename))
     uniq = f"{int(time.time())}_{secrets.token_hex(4)}"
     filename = f"{name[:40]}_{uniq}{ext.lower()}"
-
     path = os.path.join(UPLOAD_DIR, filename)
     file.save(path)
-
     rel = url_for("static", filename=f"uploads/{filename}")
     url = f"{PUBLIC_BASE_URL}{rel}" if PUBLIC_BASE_URL else url_for(
         "static", filename=f"uploads/{filename}", _external=True
