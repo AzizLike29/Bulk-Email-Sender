@@ -1,3 +1,5 @@
-Flask
+flask
 gunicorn
 python-dotenv
+werkzeug
+jinja2
