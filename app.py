@@ -4,8 +4,9 @@ import smtplib
 import ssl
 import time
 import secrets
+import mimetypes
 from email.message import EmailMessage
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
@@ -33,7 +34,7 @@ app.config["SECRET_KEY"] = FLASK_SECRET
 PUBLIC_BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 app.config["PREFERRED_URL_SCHEME"] = "https"
 
-# DB (SQLite)
+# ====== DB (SQLite) ======
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -89,14 +90,37 @@ def get_active_emails():
 def build_unsub_link(token):
     return f"{BASE_URL}{url_for('unsubscribe')}?{urlencode({'token': token})}"
 
-def send_one_email(smtp, to_email, subject, html_body, unsub_http_link):
+def send_one_email(smtp, to_email, subject, html_body, unsub_http_link,
+                   inline_image_path=None, image_cid="promoimg"):
+    """
+    Kirim email HTML. Jika inline_image_path diisi, gambar akan disematkan sebagai inline (CID).
+    """
     msg = EmailMessage()
     msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["List-Unsubscribe"] = f"<{unsub_http_link}>"
+
+    # Plain text fallback
     msg.set_content("This email requires an HTML-capable client to display properly.")
+
+    # HTML part
     msg.add_alternative(html_body, subtype="html")
+
+    # Sisipkan gambar inline agar tidak dianggap remote image
+    if inline_image_path and os.path.exists(inline_image_path):
+        ctype, _ = mimetypes.guess_type(inline_image_path)
+        maintype, subtype = (ctype or "image/jpeg").split("/", 1)
+        with open(inline_image_path, "rb") as f:
+            # HTML part = payload terakhir
+            msg.get_payload()[-1].add_related(
+                f.read(),
+                maintype=maintype,
+                subtype=subtype,
+                cid=f"<{image_cid}>",
+                filename=os.path.basename(inline_image_path),
+            )
+
     smtp.send_message(msg)
 
 def connect_smtp():
@@ -109,14 +133,39 @@ def connect_smtp():
         server.login(SMTP_USER, SMTP_PASS)
     return server
 
+# Helpers upload/url
+UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)  # auto-buat folder kalau belum ada
+
+ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
+
+def allowed_ext(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
+
+def _local_path_from_image_url(image_url: str):
+    """
+    Jika image_url mengarah ke /static/uploads/... kembalikan path lokal absolut.
+    Kalau bukan (mis. URL eksternal), kembalikan None.
+    """
+    try:
+        p = urlparse(image_url)
+        path = p.path or ""
+        if path.startswith("/static/uploads/"):
+            return os.path.join(BASE_DIR, path.lstrip("/"))
+    except Exception:
+        pass
+    return None
+
 # Routes
 @app.get("/")
 def index():
     active_count = len(get_active_emails())
-    return render_template("index.html",
-                           active_count=active_count,
-                           sender_email=SENDER_EMAIL,
-                           sender_name=SENDER_NAME)
+    return render_template(
+        "index.html",
+        active_count=active_count,
+        sender_email=SENDER_EMAIL,
+        sender_name=SENDER_NAME
+    )
 
 @app.get("/subscribe")
 def subscribe_form():
@@ -150,19 +199,21 @@ def send_route():
     mode = request.form.get("mode", "send")  # 'test' atau 'send'
     test_email = (request.form.get("test_email") or "").strip()
 
-    # Kumpulkan penerima
+    # Kumpulkan penerima manual
     recipients = set()
     for part in raw_recipients.replace(";", ",").split(","):
         e = part.strip()
         if e:
             recipients.add(e.lower())
 
+    # Tambahkan subscriber aktif jika dipilih
     audience = []
     if use_audience:
         audience = get_active_emails()
         for row in audience:
             recipients.add(row["email"].lower())
 
+    # Mode test
     if mode == "test":
         if not test_email:
             flash("Masukkan alamat 'Test to' dulu.", "error")
@@ -173,6 +224,10 @@ def send_route():
         flash("Tidak ada penerima.", "error")
         return redirect(url_for("index"))
 
+    # Ambil image_url dari form (hasil upload ke /static/uploads/...)
+    image_url_form = request.form.get("image_url")
+    local_img_path = _local_path_from_image_url(image_url_form) if image_url_form else None
+
     sent_ok, sent_fail = [], []
     try:
         with connect_smtp() as smtp:
@@ -181,36 +236,41 @@ def send_route():
                 token = token_map.get(to_email, secrets.token_urlsafe(16))
                 unsub_link = build_unsub_link(token)
 
+                # Jika punya path lokal (hasil upload), pakai inline CID; kalau tidak, fallback pakai URL
+                image_src = "cid:promoimg" if local_img_path else image_url_form
+
                 html = render_template(
                     "email_templates/promo.html",
                     body_html=raw_body,
                     unsub_link=unsub_link,
-                    image_url=request.form.get("image_url")
+                    image_src=image_src,
                 )
 
                 try:
-                    send_one_email(smtp, to_email, subject, html, unsub_link)
+                    send_one_email(
+                        smtp,
+                        to_email,
+                        subject,
+                        html,
+                        unsub_link,
+                        inline_image_path=local_img_path,
+                        image_cid="promoimg",
+                    )
                     sent_ok.append(to_email)
                 except Exception as e:
                     sent_fail.append((to_email, str(e)))
+
                 time.sleep(BATCH_DELAY_SEC)
     except Exception as e:
         flash(f"Gagal koneksi SMTP: {e}", "error")
         return redirect(url_for("index"))
 
-    return render_template("success.html",
-                           subject=subject,
-                           sent_ok=sent_ok,
-                           sent_fail=sent_fail)
-
-# BASE_DIR didefinisikan
-UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)  # auto-buat folder kalau belum ada
-
-ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
-
-def allowed_ext(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
+    return render_template(
+        "success.html",
+        subject=subject,
+        sent_ok=sent_ok,
+        sent_fail=sent_fail
+    )
 
 @app.post("/upload")
 def upload():
