@@ -3,9 +3,7 @@ import sqlite3
 import time
 import secrets
 import requests
-import mimetypes
-import base64
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
@@ -19,19 +17,14 @@ DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
 REPLY_TO = os.getenv("REPLY_TO", "")
-
-RAILWAY_DOMAIN = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
-DEFAULT_BASE = f"https://{RAILWAY_DOMAIN}" if RAILWAY_DOMAIN else "https://broadcast-email.up.railway.app"
-BASE_URL = (os.getenv("BASE_URL") or DEFAULT_BASE).rstrip("/")
-
+BASE_URL = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
 FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = FLASK_SECRET
-app.config["PREFERRED_URL_SCHEME"] = "https"
-
 PUBLIC_BASE_URL = BASE_URL
+app.config["PREFERRED_URL_SCHEME"] = "https"
 
 # DB
 def get_db():
@@ -53,7 +46,7 @@ def init_db():
             )
             """
         )
-    print("DB ready at", DB_PATH, flush=True)
+    print("DB ready at", DB_PATH)
 
 init_db()
 
@@ -84,7 +77,9 @@ def unsubscribe_by_token(token):
 
 def get_active_emails():
     with get_db() as con:
-        cur = con.execute("SELECT email, name, token FROM subscribers WHERE status='active' ORDER BY id DESC")
+        cur = con.execute(
+            "SELECT email, name, token FROM subscribers WHERE status='active' ORDER BY id DESC"
+        )
         return cur.fetchall()
 
 # Helpers
@@ -99,56 +94,34 @@ ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
 def allowed_ext(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
 
-def _local_path_from_image_url(image_url: str):
-    try:
-        p = urlparse(image_url or "")
-        path = p.path or ""
-        if path.startswith("/static/uploads/"):
-            return os.path.join(BASE_DIR, path.lstrip("/"))
-    except Exception:
-        pass
-    return None
-
 # Send email (SendGrid Web API)
-def send_one_email(to_email, subject, html_body, unsub_http_link,
-                   inline_image_path=None, image_cid="promoimg"):
-    api_key = os.getenv("SMTP_PASS")
-    if not api_key:
-        raise RuntimeError("SendGrid API key (SMTP_PASS) belum diset")
+def send_one_email(to_email, subject, html_body, unsub_http_link):
+    SENDGRID_API_KEY = os.getenv("SMTP_PASS")
+    if not SENDGRID_API_KEY:
+        raise RuntimeError("SendGrid API key tidak ditemukan di SMTP_PASS")
     if not SENDER_EMAIL:
-        raise RuntimeError("SENDER_EMAIL belum diset (harus verified di SendGrid)")
+        raise RuntimeError("SENDER_EMAIL tidak diset")
 
     url = "https://api.sendgrid.com/v3/mail/send"
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {SENDGRID_API_KEY}",
         "Content-Type": "application/json",
     }
 
     data = {
-        "personalizations": [{
-            "to": [{"email": to_email}],
-            "subject": subject,
-            "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"}
-        }],
+        "personalizations": [
+            {
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"},
+            }
+        ],
         "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
-        "content": [{"type": "text/html", "value": html_body}]
+        "content": [{"type": "text/html", "value": html_body}],
     }
 
     if REPLY_TO:
         data["reply_to"] = {"email": REPLY_TO}
-
-    if inline_image_path and os.path.exists(inline_image_path):
-        ctype, _ = mimetypes.guess_type(inline_image_path)
-        ctype = ctype or "image/jpeg"
-        with open(inline_image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        data.setdefault("attachments", []).append({
-            "content": b64,
-            "type": ctype,
-            "filename": os.path.basename(inline_image_path),
-            "disposition": "inline",
-            "content_id": image_cid,
-        })
 
     resp = requests.post(url, headers=headers, json=data, timeout=30)
     if resp.status_code not in (200, 202):
@@ -162,7 +135,7 @@ def index():
         "index.html",
         active_count=active_count,
         sender_email=SENDER_EMAIL,
-        sender_name=SENDER_NAME
+        sender_name=SENDER_NAME,
     )
 
 @app.get("/subscribe")
@@ -230,8 +203,13 @@ def send_route():
         flash("Tidak ada penerima.", "error")
         return redirect(url_for("index"))
 
-    image_url_form = request.form.get("image_url") or ""
-    local_img_path = _local_path_from_image_url(image_url_form) if image_url_form else None
+    image_url_form = (request.form.get("image_url") or "").strip()
+    image_src = None
+    if image_url_form:
+        if image_url_form.startswith("/"):
+            image_src = f"{PUBLIC_BASE_URL}{image_url_form}"
+        else:
+            image_src = image_url_form
 
     sent_ok, sent_fail = [], []
     token_map = {row["email"].lower(): row["token"] for row in audience}
@@ -239,13 +217,6 @@ def send_route():
     for to_email in sorted(recipients):
         token = token_map.get(to_email, secrets.token_urlsafe(16))
         unsub_link = build_unsub_link(token)
-
-        if local_img_path:
-            image_src = "cid:promoimg"
-        else:
-            image_src = image_url_form.strip()
-            if image_src.startswith("/"):
-                image_src = f"{PUBLIC_BASE_URL.rstrip('/')}{image_src}"
 
         html = render_template(
             "email_templates/promo.html",
@@ -255,14 +226,7 @@ def send_route():
         )
 
         try:
-            send_one_email(
-                to_email,
-                subject,
-                html,
-                unsub_link,
-                inline_image_path=local_img_path,
-                image_cid="promoimg",
-            )
+            send_one_email(to_email, subject, html, unsub_link)
             sent_ok.append(to_email)
         except Exception as e:
             sent_fail.append((to_email, str(e)))
@@ -270,10 +234,7 @@ def send_route():
         time.sleep(BATCH_DELAY_SEC)
 
     return render_template(
-        "success.html",
-        subject=subject,
-        sent_ok=sent_ok,
-        sent_fail=sent_fail
+        "success.html", subject=subject, sent_ok=sent_ok, sent_fail=sent_fail
     )
 
 @app.post("/upload")
@@ -293,7 +254,7 @@ def upload():
     file.save(path)
 
     rel = url_for("static", filename=f"uploads/{filename}")
-    url = f"{PUBLIC_BASE_URL.rstrip('/')}{rel}" if PUBLIC_BASE_URL else url_for(
+    url = f"{PUBLIC_BASE_URL}{rel}" if PUBLIC_BASE_URL else url_for(
         "static", filename=f"uploads/{filename}", _external=True
     )
     return {"url": url}
