@@ -124,7 +124,7 @@ def send_one_email(smtp, to_email, subject, html_body, unsub_http_link,
 
 def connect_smtp():
     context = ssl.create_default_context()
-    server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+    server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
     server.ehlo()
     server.starttls(context=context)
     server.ehlo()
