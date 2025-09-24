@@ -30,6 +30,8 @@
           class="mt-2 w-48 h-48 object-contain border rounded hidden"
         />
 
+        <input type="hidden" name="image_url" id="image_url" />
+
         <label for="body_html" class="text-sm font-medium mt-2"
           >HTML Body</label
         >
@@ -132,19 +134,13 @@
         method: "POST",
         body: formData,
       })
-        .then(function (res) {
-          return res.json();
-        })
-        .then(function (result) {
-          const range = quill.getSelection(true) || {
-            index: quill.getLength(),
-          };
+        .then((res) => res.json())
+        .then((result) => {
           if (result && result.url) {
-            quill.insertEmbed(range.index, "image", result.url);
-            quill.setSelection(range.index + 1);
+            document.getElementById("image_url").value = result.url;
           }
         })
-        .catch(function (err) {
+        .catch((err) => {
           console.error("Upload gagal:", err);
         });
     }
@@ -202,6 +198,7 @@
         currentURL = URL.createObjectURL(file);
         previewImg.src = currentURL;
         previewImg.classList.remove("hidden");
+        uploadImage(file);
       });
     }
   });

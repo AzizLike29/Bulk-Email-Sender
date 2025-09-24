@@ -23,7 +23,7 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:5000")
+BASE_URL = os.getenv("BASE_URL", "https://bulk-email-sender.up.railway.app")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
 FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
@@ -181,8 +181,13 @@ def send_route():
                 token = token_map.get(to_email, secrets.token_urlsafe(16))
                 unsub_link = build_unsub_link(token)
 
-                html = render_template("email_templates/promo.html",
-                                       body_html=raw_body, unsub_link=unsub_link)
+                html = render_template(
+                    "email_templates/promo.html",
+                    body_html=raw_body,
+                    unsub_link=unsub_link,
+                    image_url=request.form.get("image_url")
+                )
+
                 try:
                     send_one_email(smtp, to_email, subject, html, unsub_link)
                     sent_ok.append(to_email)
