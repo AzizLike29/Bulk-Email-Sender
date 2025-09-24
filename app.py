@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
+import base64, mimetypes
 
 # Config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +43,7 @@ if CLOUDINARY_ENABLED:
         secure=True,
     )
 
-# DB
+# Database
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -109,8 +110,24 @@ ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
 def allowed_ext(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
 
+# Fetch image dari URL
+def _fetch_image_for_inline(url: str):
+    try:
+        head = requests.head(url, timeout=10, allow_redirects=True)
+        if head.status_code == 200 and head.headers.get("Content-Type","").startswith("image/"):
+            ct = head.headers["Content-Type"]
+            # GET hanya jika perlu isi
+            get = requests.get(url, timeout=20)
+            if get.status_code == 200 and get.content:
+                b64 = base64.b64encode(get.content).decode("ascii")
+                ext = mimetypes.guess_extension(ct.split(";")[0]) or ".jpg"
+                return {"content": b64, "type": ct, "filename": f"hero{ext}"}
+    except Exception:
+        pass
+    return None
+
 # Kirim email (SendGrid Web API)
-def send_one_email(to_email, subject, html_body, unsub_http_link):
+def send_one_email(to_email, subject, html_body, unsub_http_link, attachments=None):
     SENDGRID_API_KEY = os.getenv("SMTP_PASS")
     if not SENDGRID_API_KEY:
         raise RuntimeError("SendGrid API key tidak ditemukan di SMTP_PASS")
@@ -118,25 +135,21 @@ def send_one_email(to_email, subject, html_body, unsub_http_link):
         raise RuntimeError("SENDER_EMAIL tidak diset")
 
     url = "https://api.sendgrid.com/v3/mail/send"
-    headers = {
-        "Authorization": f"Bearer {SENDGRID_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
 
     data = {
-        "personalizations": [
-            {
-                "to": [{"email": to_email}],
-                "subject": subject,
-                "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"},
-            }
-        ],
+        "personalizations": [{
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"}
+        }],
         "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
         "content": [{"type": "text/html", "value": html_body}],
     }
-
     if REPLY_TO:
         data["reply_to"] = {"email": REPLY_TO}
+    if attachments:
+        data["attachments"] = attachments
 
     resp = requests.post(url, headers=headers, json=data, timeout=30)
     if resp.status_code not in (200, 202):
@@ -219,13 +232,17 @@ def send_route():
         return redirect(url_for("index"))
 
     image_url_form = (request.form.get("image_url") or "").strip()
-    if image_url_form:
-        if image_url_form.startswith("/"):
-            image_src = f"{PUBLIC_BASE_URL}{image_url_form}"
+    image_src = image_url_form if image_url_form else None
+    attachments = None
+
+    # Validasi URL Cloudinary => kalau gagal, embed sebagai CID
+    cid_id = "heroimg"
+    if image_src:
+        ok_inline = _fetch_image_for_inline(image_src)
+        if not ok_inline:
+            pass
         else:
-            image_src = image_url_form
-    else:
-        image_src = None
+            pass
 
     sent_ok, sent_fail = [], []
     token_map = {row["email"].lower(): row["token"] for row in audience}
@@ -234,15 +251,30 @@ def send_route():
         token = token_map.get(to_email, secrets.token_urlsafe(16))
         unsub_link = build_unsub_link(token)
 
+        use_cid = False
+        inline = _fetch_image_for_inline(image_src) if image_src else None
+        if not inline and image_src:
+            # URL tidak valid kirim tanpa gambar
+            pass
+        elif inline:
+            attachments = [{
+                "content": inline["content"],
+                "type": inline["type"],
+                "filename": inline["filename"],
+                "disposition": "inline",
+                "content_id": cid_id,
+            }]
+            use_cid = True
+
         html = render_template(
             "email_templates/promo.html",
             body_html=raw_body,
             unsub_link=unsub_link,
-            image_src=image_src,
+            image_src=(f"cid:{cid_id}" if use_cid else image_src)
         )
 
         try:
-            send_one_email(to_email, subject, html, unsub_link)
+            send_one_email(to_email, subject, html, unsub_link, attachments=attachments)
             sent_ok.append(to_email)
         except Exception as e:
             sent_fail.append((to_email, str(e)))
