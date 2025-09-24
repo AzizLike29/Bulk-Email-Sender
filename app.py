@@ -18,14 +18,16 @@ DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
-BASE_URL = os.getenv("BASE_URL", "https://broadcast-email.up.railway.app/")
+REPLY_TO = os.getenv("REPLY_TO", "")
+BASE_URL = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
 FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = FLASK_SECRET
 
-PUBLIC_BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+# Untuk membangun URL file upload statis
+PUBLIC_BASE_URL = BASE_URL
 app.config["PREFERRED_URL_SCHEME"] = "https"
 
 # DB (SQLite)
@@ -98,7 +100,7 @@ def _local_path_from_image_url(image_url: str):
     Kalau bukan (mis. URL eksternal), kembalikan None.
     """
     try:
-        p = urlparse(image_url)
+        p = urlparse(image_url or "")
         path = p.path or ""
         if path.startswith("/static/uploads/"):
             return os.path.join(BASE_DIR, path.lstrip("/"))
@@ -111,12 +113,14 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
                    inline_image_path=None, image_cid="promoimg"):
     """
     Kirim email via SendGrid Web API (tanpa SMTP).
-    - API key diambil dari env: SMTP_PASS (biar kompatibel dengan setup sebelumnya).
-    - Jika ada file upload lokal, kirim sebagai inline attachment (CID) dan di template pakai src="cid:promoimg".
+    - API key ambil dari env: SMTP_PASS
+    - Jika ada file upload lokal, kirim sebagai inline attachment (CID) → pakai src="cid:promoimg" di template.
     """
     SENDGRID_API_KEY = os.getenv("SMTP_PASS")
     if not SENDGRID_API_KEY:
-        raise RuntimeError("SENDGRID API key tidak ditemukan di SMTP_PASS")
+        raise RuntimeError("SendGrid API key tidak ditemukan di SMTP_PASS")
+    if not SENDER_EMAIL:
+        raise RuntimeError("SENDER_EMAIL tidak diset (dan harus cocok dengan verified sender di SendGrid)")
 
     url = "https://api.sendgrid.com/v3/mail/send"
     headers = {
@@ -137,6 +141,10 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
         }]
     }
 
+    # Reply-To opsional
+    if REPLY_TO:
+        data["reply_to"] = {"email": REPLY_TO}
+
     # Inline image (CID) jika ada file lokal
     if inline_image_path and os.path.exists(inline_image_path):
         ctype, _ = mimetypes.guess_type(inline_image_path)
@@ -152,7 +160,7 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
         })
 
     resp = requests.post(url, headers=headers, json=data, timeout=30)
-    # SendGrid balas 202 kalau sukses
+    # SendGrid sukses → 202
     if resp.status_code not in (200, 202):
         raise RuntimeError(f"SendGrid error {resp.status_code}: {resp.text}")
 
@@ -202,6 +210,14 @@ def send_route():
     use_audience = request.form.get("use_audience") == "on"
     mode = request.form.get("mode", "send")  # 'test' atau 'send'
     test_email = (request.form.get("test_email") or "").strip()
+
+    # Validasi env penting sebelum kirim
+    if not os.getenv("SMTP_PASS"):
+        flash("Gagal: SMTP_PASS (SendGrid API Key) belum diset di Variables.", "error")
+        return redirect(url_for("index"))
+    if not SENDER_EMAIL:
+        flash("Gagal: SENDER_EMAIL belum diset (harus verified di SendGrid).", "error")
+        return redirect(url_for("index"))
 
     # Kumpulkan penerima manual
     recipients = set()
