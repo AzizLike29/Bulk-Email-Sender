@@ -3,12 +3,14 @@ import sqlite3
 import time
 import secrets
 import requests
+import mimetypes
+import base64
 from urllib.parse import urlencode, urlparse
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 
-# Load config dari .env
+# Config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(override=True)
 
@@ -17,18 +19,21 @@ DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "No-Reply")
 REPLY_TO = os.getenv("REPLY_TO", "")
-BASE_URL = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
+
+RAILWAY_DOMAIN = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+DEFAULT_BASE = f"https://{RAILWAY_DOMAIN}" if RAILWAY_DOMAIN else "https://broadcast-email.up.railway.app"
+BASE_URL = (os.getenv("BASE_URL") or DEFAULT_BASE).rstrip("/")
+
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
 FLASK_SECRET = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = FLASK_SECRET
-
-# Untuk membangun URL file upload statis
-PUBLIC_BASE_URL = BASE_URL
 app.config["PREFERRED_URL_SCHEME"] = "https"
 
-# DB (SQLite)
+PUBLIC_BASE_URL = BASE_URL
+
+# DB
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -36,17 +41,19 @@ def get_db():
 
 def init_db():
     with get_db() as con:
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS subscribers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            token TEXT UNIQUE NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscribers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                token TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        """)
-    print("DB ready at", DB_PATH)
+    print("DB ready at", DB_PATH, flush=True)
 
 init_db()
 
@@ -93,10 +100,6 @@ def allowed_ext(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
 
 def _local_path_from_image_url(image_url: str):
-    """
-    Jika image_url mengarah ke /static/uploads/... kembalikan path lokal absolut.
-    Kalau bukan (mis. URL eksternal), kembalikan None.
-    """
     try:
         p = urlparse(image_url or "")
         path = p.path or ""
@@ -106,23 +109,18 @@ def _local_path_from_image_url(image_url: str):
         pass
     return None
 
-# Email via SendGrid Web API
+# Send email (SendGrid Web API)
 def send_one_email(to_email, subject, html_body, unsub_http_link,
                    inline_image_path=None, image_cid="promoimg"):
-    """
-    Kirim email via SendGrid Web API (tanpa SMTP).
-    - API key ambil dari env: SMTP_PASS
-    - Jika ada file upload lokal, kirim sebagai inline attachment (CID) → pakai src="cid:promoimg" di template.
-    """
-    SENDGRID_API_KEY = os.getenv("SMTP_PASS")
-    if not SENDGRID_API_KEY:
-        raise RuntimeError("SendGrid API key tidak ditemukan di SMTP_PASS")
+    api_key = os.getenv("SMTP_PASS")
+    if not api_key:
+        raise RuntimeError("SendGrid API key (SMTP_PASS) belum diset")
     if not SENDER_EMAIL:
-        raise RuntimeError("SENDER_EMAIL tidak diset (dan harus cocok dengan verified sender di SendGrid)")
+        raise RuntimeError("SENDER_EMAIL belum diset (harus verified di SendGrid)")
 
     url = "https://api.sendgrid.com/v3/mail/send"
     headers = {
-        "Authorization": f"Bearer {SENDGRID_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -133,18 +131,26 @@ def send_one_email(to_email, subject, html_body, unsub_http_link,
             "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"}
         }],
         "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
-        "content": [{
-            "type": "text/html",
-            "value": html_body
-        }]
+        "content": [{"type": "text/html", "value": html_body}]
     }
 
-    # Reply-To opsional
     if REPLY_TO:
         data["reply_to"] = {"email": REPLY_TO}
 
+    if inline_image_path and os.path.exists(inline_image_path):
+        ctype, _ = mimetypes.guess_type(inline_image_path)
+        ctype = ctype or "image/jpeg"
+        with open(inline_image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        data.setdefault("attachments", []).append({
+            "content": b64,
+            "type": ctype,
+            "filename": os.path.basename(inline_image_path),
+            "disposition": "inline",
+            "content_id": image_cid,
+        })
+
     resp = requests.post(url, headers=headers, json=data, timeout=30)
-    # SendGrid sukses → 202
     if resp.status_code not in (200, 202):
         raise RuntimeError(f"SendGrid error {resp.status_code}: {resp.text}")
 
@@ -192,10 +198,9 @@ def send_route():
     raw_body = request.form.get("body_html") or ""
     raw_recipients = request.form.get("recipients") or ""
     use_audience = request.form.get("use_audience") == "on"
-    mode = request.form.get("mode", "send")  # 'test' atau 'send'
+    mode = request.form.get("mode", "send")
     test_email = (request.form.get("test_email") or "").strip()
 
-    # Validasi env penting sebelum kirim
     if not os.getenv("SMTP_PASS"):
         flash("Gagal: SMTP_PASS (SendGrid API Key) belum diset di Variables.", "error")
         return redirect(url_for("index"))
@@ -203,21 +208,18 @@ def send_route():
         flash("Gagal: SENDER_EMAIL belum diset (harus verified di SendGrid).", "error")
         return redirect(url_for("index"))
 
-    # Kumpulkan penerima manual
     recipients = set()
     for part in raw_recipients.replace(";", ",").split(","):
         e = part.strip()
         if e:
             recipients.add(e.lower())
 
-    # Tambahkan subscriber aktif jika dipilih
     audience = []
     if use_audience:
         audience = get_active_emails()
         for row in audience:
             recipients.add(row["email"].lower())
 
-    # Mode test
     if mode == "test":
         if not test_email:
             flash("Masukkan alamat 'Test to' dulu.", "error")
@@ -228,8 +230,7 @@ def send_route():
         flash("Tidak ada penerima.", "error")
         return redirect(url_for("index"))
 
-    # Ambil image_url dari form (hasil upload ke /static/uploads/...)
-    image_url_form = request.form.get("image_url")
+    image_url_form = request.form.get("image_url") or ""
     local_img_path = _local_path_from_image_url(image_url_form) if image_url_form else None
 
     sent_ok, sent_fail = [], []
@@ -239,7 +240,12 @@ def send_route():
         token = token_map.get(to_email, secrets.token_urlsafe(16))
         unsub_link = build_unsub_link(token)
 
-        image_src = image_url_form
+        if local_img_path:
+            image_src = "cid:promoimg"
+        else:
+            image_src = image_url_form.strip()
+            if image_src.startswith("/"):
+                image_src = f"{PUBLIC_BASE_URL.rstrip('/')}{image_src}"
 
         html = render_template(
             "email_templates/promo.html",
@@ -279,7 +285,6 @@ def upload():
     if not allowed_ext(file.filename):
         return {"error": "Invalid file type"}, 400
 
-    # nama unik agar tidak bentrok
     name, ext = os.path.splitext(secure_filename(file.filename))
     uniq = f"{int(time.time())}_{secrets.token_hex(4)}"
     filename = f"{name[:40]}_{uniq}{ext.lower()}"
@@ -287,9 +292,8 @@ def upload():
     path = os.path.join(UPLOAD_DIR, filename)
     file.save(path)
 
-    # URL publik ke static
     rel = url_for("static", filename=f"uploads/{filename}")
-    url = f"{PUBLIC_BASE_URL}{rel}" if PUBLIC_BASE_URL else url_for(
+    url = f"{PUBLIC_BASE_URL.rstrip('/')}{rel}" if PUBLIC_BASE_URL else url_for(
         "static", filename=f"uploads/{filename}", _external=True
     )
     return {"url": url}
