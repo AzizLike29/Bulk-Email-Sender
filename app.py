@@ -11,11 +11,10 @@ from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 
-# Load config dari .env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "audience.sqlite3")
-
 load_dotenv(override=True)
+
+DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -34,7 +33,7 @@ app.config["SECRET_KEY"] = FLASK_SECRET
 PUBLIC_BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 app.config["PREFERRED_URL_SCHEME"] = "https"
 
-# ====== DB (SQLite) ======
+# DB (SQLite)
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -171,6 +170,10 @@ def index():
 def subscribe_form():
     return render_template("subscribe.html")
 
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
 @app.post("/subscribe")
 def subscribe_submit():
     name = request.form.get("name", "").strip() or None
@@ -297,4 +300,7 @@ def upload():
     return {"url": url}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Starting Flask on 0.0.0.0:{port}", flush=True)
+    app.run(host="0.0.0.0", port=port)
