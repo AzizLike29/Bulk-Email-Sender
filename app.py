@@ -9,11 +9,22 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 from dotenv import load_dotenv
 import base64, mimetypes
 
+# Email
+import smtplib, ssl
+from email.message import EmailMessage
+from email.utils import formataddr
+
 # Config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(override=True)
 
-DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
+# /tmp/audience.sqlite3
+DB_PATH = os.getenv("DB_PATH", "audience.sqlite3")
+
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "0") or "0")
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_NAME  = os.getenv("SENDER_NAME", "No-Reply")
@@ -110,13 +121,12 @@ ALLOWED_EXTS = {"png", "jpg", "jpeg", "gif"}
 def allowed_ext(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
 
-# Fetch image dari URL
+# Fetch image dari URL untuk embed inline (CID)
 def _fetch_image_for_inline(url: str):
     try:
         head = requests.head(url, timeout=10, allow_redirects=True)
         if head.status_code == 200 and head.headers.get("Content-Type","").startswith("image/"):
             ct = head.headers["Content-Type"]
-            # GET hanya jika perlu isi
             get = requests.get(url, timeout=20)
             if get.status_code == 200 and get.content:
                 b64 = base64.b64encode(get.content).decode("ascii")
@@ -126,34 +136,52 @@ def _fetch_image_for_inline(url: str):
         pass
     return None
 
-# Kirim email (SendGrid Web API)
+# Kirim email via SMTP
 def send_one_email(to_email, subject, html_body, unsub_http_link, attachments=None):
-    SENDGRID_API_KEY = os.getenv("SMTP_PASS")
-    if not SENDGRID_API_KEY:
-        raise RuntimeError("SendGrid API key tidak ditemukan di SMTP_PASS")
-    if not SENDER_EMAIL:
-        raise RuntimeError("SENDER_EMAIL tidak diset")
+    if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASS):
+        raise RuntimeError("Konfigurasi SMTP tidak lengkap: isi SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS.")
 
-    url = "https://api.sendgrid.com/v3/mail/send"
-    headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
-
-    data = {
-        "personalizations": [{
-            "to": [{"email": to_email}],
-            "subject": subject,
-            "headers": {"List-Unsubscribe": f"<{unsub_http_link}>"}
-        }],
-        "from": {"email": SENDER_EMAIL, "name": SENDER_NAME},
-        "content": [{"type": "text/html", "value": html_body}],
-    }
+    msg = EmailMessage()
+    msg["From"] = formataddr((SENDER_NAME, SENDER_EMAIL or SMTP_USER))
+    msg["To"] = to_email
+    msg["Subject"] = subject
     if REPLY_TO:
-        data["reply_to"] = {"email": REPLY_TO}
-    if attachments:
-        data["attachments"] = attachments
+        msg["Reply-To"] = REPLY_TO
+    if unsub_http_link:
+        msg["List-Unsubscribe"] = f"<{unsub_http_link}>"
 
-    resp = requests.post(url, headers=headers, json=data, timeout=30)
-    if resp.status_code not in (200, 202):
-        raise RuntimeError(f"SendGrid error {resp.status_code}: {resp.text}")
+    msg.set_content("Versi teks. Gunakan klien email yang mendukung HTML.")
+    msg.add_alternative(html_body, subtype="html")
+
+    if attachments:
+        for att in attachments:
+            ctype = att.get("type", "application/octet-stream")
+            maintype, subtype = ctype.split("/", 1)
+            raw = base64.b64decode(att["content"])
+            filename = att.get("filename", "file")
+            cid = att.get("content_id") or att.get("cid")
+            if att.get("disposition") == "inline" and cid:
+                msg.get_payload()[-1].add_related(
+                    raw, maintype=maintype, subtype=subtype, cid=cid, filename=filename
+                )
+            else:
+                msg.add_attachment(raw, maintype=maintype, subtype=subtype, filename=filename)
+
+    if SMTP_PORT == 465:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg, from_addr=(SENDER_EMAIL or SMTP_USER), to_addrs=[to_email])
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            try:
+                server.starttls()
+                server.ehlo()
+            except Exception:
+                pass
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg, from_addr=(SENDER_EMAIL or SMTP_USER), to_addrs=[to_email])
 
 # Routes
 @app.get("/")
@@ -202,11 +230,11 @@ def send_route():
     mode           = request.form.get("mode", "send")
     test_email     = (request.form.get("test_email") or "").strip()
 
-    if not os.getenv("SMTP_PASS"):
-        flash("Gagal: SMTP_PASS (SendGrid API Key) belum diset di Variables.", "error")
+    if not SMTP_PASS:
+        flash("Gagal: SMTP_PASS (password email) belum diset.", "error")
         return redirect(url_for("index"))
     if not SENDER_EMAIL:
-        flash("Gagal: SENDER_EMAIL belum diset (harus verified di SendGrid).", "error")
+        flash("Gagal: SENDER_EMAIL belum diset.", "error")
         return redirect(url_for("index"))
 
     recipients = set()
@@ -233,16 +261,10 @@ def send_route():
 
     image_url_form = (request.form.get("image_url") or "").strip()
     image_src = image_url_form if image_url_form else None
-    attachments = None
 
-    # Validasi URL Cloudinary => kalau gagal, embed sebagai CID
+    # Cache gambar inline sekali
+    inline_cache = _fetch_image_for_inline(image_src) if image_src else None
     cid_id = "heroimg"
-    if image_src:
-        ok_inline = _fetch_image_for_inline(image_src)
-        if not ok_inline:
-            pass
-        else:
-            pass
 
     sent_ok, sent_fail = [], []
     token_map = {row["email"].lower(): row["token"] for row in audience}
@@ -251,16 +273,13 @@ def send_route():
         token = token_map.get(to_email, secrets.token_urlsafe(16))
         unsub_link = build_unsub_link(token)
 
+        attachments = None
         use_cid = False
-        inline = _fetch_image_for_inline(image_src) if image_src else None
-        if not inline and image_src:
-            # URL tidak valid kirim tanpa gambar
-            pass
-        elif inline:
+        if inline_cache:
             attachments = [{
-                "content": inline["content"],
-                "type": inline["type"],
-                "filename": inline["filename"],
+                "content": inline_cache["content"],
+                "type": inline_cache["type"],
+                "filename": inline_cache["filename"],
                 "disposition": "inline",
                 "content_id": cid_id,
             }]
@@ -311,7 +330,6 @@ def upload():
         except Exception as e:
             return {"error": f"Cloudinary error: {e}"}, 500
 
-    # Fallback simpan lokal
     name, ext = os.path.splitext(secure_filename(file.filename))
     uniq = f"{int(time.time())}_{secrets.token_hex(4)}"
     filename = f"{name[:40]}_{uniq}{ext.lower()}"
