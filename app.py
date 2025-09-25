@@ -13,10 +13,10 @@ import base64, mimetypes
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(override=True)
 
-DB_PATH = os.getenv("DB_PATH", "audience.sqlite3")
+DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
-SENDER_NAME  = os.getenv("SENDER_NAME", "")
+SENDER_NAME  = os.getenv("SENDER_NAME", "No-Reply")
 REPLY_TO     = os.getenv("REPLY_TO", "")
 BASE_URL     = (os.getenv("BASE_URL", "https://broadcast-email.up.railway.app")).rstrip("/")
 BATCH_DELAY_SEC = float(os.getenv("BATCH_DELAY_SEC", "0.5"))
