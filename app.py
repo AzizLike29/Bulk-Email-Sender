@@ -19,7 +19,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(override=True)
 
 # /tmp/audience.sqlite3
-DB_PATH = os.getenv("DB_PATH", "audience.sqlite3")
+DB_PATH = os.getenv("DB_PATH", "/tmp/audience.sqlite3")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "0") or "0")
